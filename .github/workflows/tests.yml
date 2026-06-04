@@ -1,0 +1,38 @@
+name: Tests
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  minimum:
+    name: Home Assistant 2025.4.0
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.13"
+      - run: uv sync --extra dev
+      - run: uv run pytest
+      - run: uv run ruff check custom_components tests
+      - run: uv run ruff format --check custom_components tests
+
+  current:
+    name: Home Assistant 2026.9.4
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.14"
+      - run: uv venv
+      - run: >-
+          uv pip install -r pyproject.toml
+          "pytest-homeassistant-custom-component==0.13.367" "ruff>=0.12.0"
+      - run: .venv/bin/python -m pytest
+      - run: .venv/bin/ruff check custom_components tests
+      - run: .venv/bin/ruff format --check custom_components tests

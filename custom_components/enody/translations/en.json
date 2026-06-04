@@ -1,0 +1,57 @@
+{
+  "title": "Enody",
+  "config": {
+    "flow_title": "{name}",
+    "step": {
+      "user": {
+        "title": "Add Enody device",
+        "description": "Enter the device's local WiFi endpoint, for example `192.168.1.50:8788`.",
+        "data": {
+          "endpoint": "Endpoint"
+        }
+      },
+      "zeroconf_confirm": {
+        "title": "Add {name}",
+        "description": "Home Assistant discovered {name} at `{endpoint}`. Submit to start pairing."
+      },
+      "reconfigure": {
+        "title": "Reconfigure Enody device",
+        "description": "Enter the device endpoint to pair again.",
+        "data": {
+          "endpoint": "Endpoint"
+        }
+      },
+      "pair": {
+        "title": "Pairing Enody device"
+      },
+      "pair_failed": {
+        "title": "Pairing failed",
+        "description": "Home Assistant could not pair with the device. Submit to try again."
+      }
+    },
+    "progress": {
+      "pair": "Pairing with the Enody device at `{endpoint}`. Follow the approval instructions on the device.\n\n{approval_text}"
+    },
+    "error": {
+      "invalid_endpoint": "Enter a valid local endpoint",
+      "missing_dependency": "Home Assistant could not load enody-py",
+      "pairing_failed": "Unable to pair with the Enody device"
+    },
+    "abort": {
+      "already_configured": "This Enody device is already configured",
+      "already_in_progress": "This Enody device is already being configured",
+      "not_enody_device": "The discovered device is not a supported Enody device",
+      "pairing_failed": "The generated device token was invalid",
+      "reconfigure_successful": "The Enody device was reconfigured",
+      "wrong_device": "The paired device does not match this config entry"
+    }
+  },
+  "exceptions": {
+    "communication_error": {
+      "message": "Unable to communicate with the Enody device."
+    },
+    "dependency_error": {
+      "message": "Home Assistant could not load enody-py. Reinstall the integration or report an incompatible package build."
+    }
+  }
+}

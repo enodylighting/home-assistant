@@ -1,0 +1,21 @@
+{
+  "domain": "enody",
+  "name": "Enody",
+  "codeowners": ["@enodylighting"],
+  "config_flow": true,
+  "documentation": "https://github.com/enodylighting/home-assistant",
+  "integration_type": "device",
+  "iot_class": "assumed_state",
+  "issue_tracker": "https://github.com/enodylighting/home-assistant/issues",
+  "loggers": ["enody"],
+  "requirements": ["enody==0.2.3"],
+  "version": "0.1.0",
+  "zeroconf": [
+    {
+      "type": "_enody._tcp.local.",
+      "properties": {
+        "proto": "enody-v1"
+      }
+    }
+  ]
+}
