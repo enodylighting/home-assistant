@@ -1,6 +1,6 @@
 [project]
 name = "enody-home-assistant"
-version = "0.1.0"
+version = "0.1.1"
 description = "Home Assistant custom integration for Enody devices"
 requires-python = ">=3.13.0"
 readme = "README.md"
