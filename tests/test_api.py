@@ -132,7 +132,9 @@ class FakeRuntime:
     """Fake Enody runtime."""
 
     def __init__(self, fixtures: list[FakeFixture]) -> None:
-        self._host = FakeHost(fixtures)
+        self._fixtures = fixtures
+        self._host: FakeHost | None = None
+        self.host_fetch_count = 0
         self.connect_count = 0
         self.disconnect_count = 0
         self.connect_error: Exception | None = None
@@ -167,10 +169,17 @@ class FakeRuntime:
         if self.disconnect_error is not None:
             raise self.disconnect_error
 
+    def is_connected(self) -> bool:
+        """Return whether the fake transport is open."""
+        return self.active_connections > 0
+
     def host(self) -> FakeHost:
         """Return the host."""
         if self.host_error is not None:
             raise self.host_error
+        if self._host is None:
+            self.host_fetch_count += 1
+            self._host = FakeHost(self._fixtures)
         return self._host
 
 
@@ -286,16 +295,32 @@ class EnodyApiTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertIsInstance(result.exception.__cause__, ValueError)
 
-    async def test_get_info_uses_a_short_lived_connection(self) -> None:
-        """Metadata calls connect and disconnect exactly once."""
-        info = await self.client().async_get_info()
+    async def test_get_info_reuses_connection_and_refreshes_metadata(self) -> None:
+        """Polling performs fresh reads without replacing the connection."""
+        client = self.client()
+        info = await client.async_get_info()
+        self.assertEqual(await client.async_get_info(), info)
 
         self.assertEqual(info.host_id, TOKEN_DATA["host_id"])
         self.assertEqual(info.firmware_version, "0.2.0")
         self.assertEqual(info.fixture_ids, ("fixture-1",))
         self.assertEqual(info.name, "Enody EP01 98A316B1")
         self.assertEqual(self.runtime.connect_count, 1)
-        self.assertEqual(self.runtime.disconnect_count, 1)
+        self.assertEqual(self.runtime.disconnect_count, 0)
+        self.assertEqual(self.runtime.host_fetch_count, 2)
+
+    async def test_on_off_on_and_poll_share_one_connection(self) -> None:
+        """Rapid toggles never open another EP01 connection."""
+        client = self.client()
+        await client.async_get_info()
+        for flux in (1, 0, 1):
+            await client.async_display_fixture("fixture-1", flux)
+        await client.async_get_info()
+
+        self.assertEqual(self.runtime.connect_count, 1)
+        self.assertEqual(self.runtime.disconnect_count, 0)
+        self.assertEqual(self.runtime.max_active_connections, 1)
+        self.assertEqual(len(self.fixture.display_calls), 3)
 
     async def test_display_color_temperature(self) -> None:
         """Color temperature and brightness map to enody-py types."""
@@ -309,7 +334,7 @@ class EnodyApiTest(unittest.IsolatedAsyncioTestCase):
             self.fixture.display_calls,
             [(("blackbody", 3000.0), ("relative", 0.5))],
         )
-        self.assertEqual(self.runtime.disconnect_count, 1)
+        self.assertEqual(self.runtime.disconnect_count, 0)
 
     async def test_display_xy_clamps_flux(self) -> None:
         """XY color maps to chromaticity and relative flux is clamped."""
@@ -341,10 +366,11 @@ class EnodyApiTest(unittest.IsolatedAsyncioTestCase):
             (0.25, {}, ("flux",), 0.25),
             (0, {}, ("flux",), 0.0),
         ]
+        client = self.client()
         for flux, color, configuration, expected_flux in cases:
             with self.subTest(flux=flux, color=color):
                 self.fixture.transition_calls.clear()
-                await self.client().async_display_fixture(
+                await client.async_display_fixture(
                     "fixture-1", flux, transition=2.5, **color
                 )
 
@@ -353,8 +379,8 @@ class EnodyApiTest(unittest.IsolatedAsyncioTestCase):
                     [(configuration, ("relative", expected_flux), 2.5)],
                 )
                 self.assertEqual(self.fixture.display_calls, [])
-        self.assertEqual(self.runtime.connect_count, len(cases))
-        self.assertEqual(self.runtime.disconnect_count, len(cases))
+        self.assertEqual(self.runtime.connect_count, 1)
+        self.assertEqual(self.runtime.disconnect_count, 0)
 
     async def test_zero_duration_uses_one_immediate_display(self) -> None:
         """An explicit zero duration preserves immediate light control."""
@@ -404,6 +430,8 @@ class EnodyApiTest(unittest.IsolatedAsyncioTestCase):
             self.fixture.allow_transition.set()
             await asyncio.wait_for(task, 1)
 
+        self.assertEqual(self.runtime.disconnect_count, 0)
+        await client.async_disconnect()
         self.assertEqual(self.runtime.disconnect_count, 1)
 
     async def test_display_errors_are_normalized_and_disconnected(self) -> None:
@@ -414,6 +442,57 @@ class EnodyApiTest(unittest.IsolatedAsyncioTestCase):
             await self.client().async_display_fixture("fixture-1", 0.5)
 
         self.assertIsInstance(result.exception.__cause__, BrokenPipeError)
+        self.assertEqual(self.runtime.disconnect_count, 1)
+
+    async def test_failed_command_is_not_replayed_and_next_poll_reconnects(
+        self,
+    ) -> None:
+        """Failure drops the stale runtime; only later work reconnects."""
+        client = self.client()
+        await client.async_get_info()
+        self.fixture.display_error = TimeoutError("response lost")
+
+        with self.assertRaises(api.EnodyCannotConnect):
+            await client.async_display_fixture("fixture-1", 0.5)
+
+        self.assertEqual(self.runtime.connect_count, 1)
+        self.assertEqual(self.runtime.disconnect_count, 1)
+        self.fixture.display_error = None
+        await client.async_get_info()
+        await client.async_display_fixture("fixture-1", 0.5)
+
+        self.assertEqual(self.runtime.connect_count, 2)
+        self.assertEqual(self.runtime.disconnect_count, 1)
+        self.assertEqual(len(self.fixture.display_calls), 1)
+
+    async def test_metadata_failure_drops_connection(self) -> None:
+        """A polling failure cleans up before a subsequent refresh."""
+        client = self.client()
+        await client.async_get_info()
+        self.runtime.host_error = TimeoutError("device offline")
+        with self.assertRaises(api.EnodyCannotConnect):
+            await client.async_get_info()
+        self.assertEqual(self.runtime.disconnect_count, 1)
+
+        self.runtime.host_error = None
+        await client.async_get_info()
+        self.assertEqual(self.runtime.connect_count, 2)
+
+    async def test_closed_transport_is_discarded_before_reconnect(self) -> None:
+        """A transport reported closed is not reused."""
+        client = self.client()
+        await client.async_get_info()
+        with patch.object(self.runtime, "is_connected", return_value=False):
+            await client.async_get_info()
+        self.assertEqual(self.runtime.connect_count, 2)
+        self.assertEqual(self.runtime.disconnect_count, 1)
+
+    async def test_disconnect_is_idempotent(self) -> None:
+        """Unload or stop closes the connection at most once."""
+        client = self.client()
+        await client.async_get_info()
+        await client.async_disconnect()
+        await client.async_disconnect()
         self.assertEqual(self.runtime.disconnect_count, 1)
 
     async def test_missing_fixture_is_reported(self) -> None:
@@ -437,7 +516,10 @@ class EnodyApiTest(unittest.IsolatedAsyncioTestCase):
         """Best-effort cleanup cannot turn a successful command into failure."""
         self.runtime.disconnect_error = OSError("already closed")
 
-        await self.client().async_display_fixture("fixture-1", 0.5)
+        client = self.client()
+        await client.async_display_fixture("fixture-1", 0.5)
+        await client.async_disconnect()
+        await client.async_disconnect()
 
         self.assertEqual(len(self.fixture.display_calls), 1)
         self.assertEqual(self.runtime.disconnect_count, 1)
@@ -465,3 +547,26 @@ class EnodyApiTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(self.runtime.max_active_connections, 1)
         self.assertEqual(len(self.fixture.display_calls), 2)
+        self.assertEqual(self.runtime.connect_count, 1)
+
+    async def test_disconnect_waits_for_pending_transition(self) -> None:
+        """Unloading cannot disconnect during an in-flight command."""
+        self.fixture.allow_transition.clear()
+        client = api.EnodyClient(ThreadedFakeHass(), TOKEN_DATA, "192.0.2.10:8788")
+        command = asyncio.create_task(
+            client.async_display_fixture("fixture-1", 0.5, transition=2.5)
+        )
+        disconnect = None
+        try:
+            entered = await asyncio.to_thread(self.fixture.transition_entered.wait, 1)
+            self.assertTrue(entered)
+            disconnect = asyncio.create_task(client.async_disconnect())
+            await asyncio.sleep(0)
+            self.assertFalse(disconnect.done())
+            self.assertEqual(self.runtime.disconnect_count, 0)
+        finally:
+            self.fixture.allow_transition.set()
+            await asyncio.wait_for(command, 1)
+            if disconnect is not None:
+                await asyncio.wait_for(disconnect, 1)
+        self.assertEqual(self.runtime.disconnect_count, 1)

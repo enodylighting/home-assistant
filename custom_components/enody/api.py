@@ -94,6 +94,7 @@ class EnodyClient:
         self._token_data = token_data
         self._endpoint = endpoint
         self._lock = Lock()
+        self._runtime: Any | None = None
 
     async def async_get_info(self) -> EnodyDeviceInfo:
         """Return current device metadata."""
@@ -160,29 +161,45 @@ class EnodyClient:
 
     @contextmanager
     def _connected_runtime(self) -> Iterator[tuple[Any, Any]]:
-        """Connect a short-lived runtime and always disconnect it."""
-        runtime = None
+        """Reuse the device connection and discard it only on failure."""
         try:
             enody = _load_enody()
-            token = enody.Token.from_dict(self._token_data)
-            runtime = enody.WifiConnection.runtime_from_endpoint(
-                token,
-                self._endpoint,
-            )
-            runtime.connect()
-            yield enody, runtime
+            if self._runtime is not None and not self._runtime.is_connected():
+                self._disconnect_locked()
+            if self._runtime is None:
+                token = enody.Token.from_dict(self._token_data)
+                self._runtime = enody.WifiConnection.runtime_from_endpoint(
+                    token,
+                    self._endpoint,
+                )
+                self._runtime.connect()
+            yield enody, self._runtime
         except EnodyError:
+            self._disconnect_locked()
             raise
         except Exception as err:
+            self._disconnect_locked()
             raise EnodyCannotConnect(
                 "Unable to communicate with the Enody device"
             ) from err
-        finally:
-            if runtime is not None:
-                try:
-                    runtime.disconnect()
-                except Exception:
-                    LOGGER.debug("Failed to disconnect Enody runtime", exc_info=True)
+
+    async def async_disconnect(self) -> None:
+        """Close the connection after any pending device work finishes."""
+        await self._hass.async_add_executor_job(self._disconnect_sync)
+
+    def _disconnect_sync(self) -> None:
+        """Serialize cleanup with commands and metadata polling."""
+        with self._lock:
+            self._disconnect_locked()
+
+    def _disconnect_locked(self) -> None:
+        """Close and forget the runtime while the executor lock is held."""
+        runtime, self._runtime = self._runtime, None
+        if runtime is not None:
+            try:
+                runtime.disconnect()
+            except Exception:
+                LOGGER.debug("Failed to disconnect Enody runtime", exc_info=True)
 
 
 def _configuration(
