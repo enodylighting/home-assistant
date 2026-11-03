@@ -59,6 +59,16 @@ def _load_enody() -> Any:
         raise EnodyDependencyError("Unable to import enody-py") from err
 
 
+def _read_live_host(runtime: Any) -> Any:
+    """Ask the device for host info, past the SDK's Python cache.
+
+    enody==0.2.3 caches Runtime.host() in Python and reports a dead socket as
+    connected, so a real request is the only way to learn a session has died.
+    This reaches for a private attribute: recheck it when the SDK pin changes.
+    """
+    return runtime._runtime_rs.host()
+
+
 def pair_device_sync(
     endpoint: str,
     on_approval: ApprovalCallback | None = None,
@@ -161,18 +171,22 @@ class EnodyClient:
 
     @contextmanager
     def _connected_runtime(self) -> Iterator[tuple[Any, Any]]:
-        """Reuse the device connection and discard it only on failure."""
+        """Reuse a connection proven alive and discard it only on failure.
+
+        The proof comes before any command, so a dead session costs one
+        reconnect and a command is never sent twice.
+        """
         try:
             enody = _load_enody()
-            if self._runtime is not None and not self._runtime.is_connected():
+            reused = self._runtime is not None
+            try:
+                self._prove_runtime_locked(enody)
+            except Exception:
+                if not reused:
+                    raise
+                LOGGER.debug("Enody session is dead, reconnecting", exc_info=True)
                 self._disconnect_locked()
-            if self._runtime is None:
-                token = enody.Token.from_dict(self._token_data)
-                self._runtime = enody.WifiConnection.runtime_from_endpoint(
-                    token,
-                    self._endpoint,
-                )
-                self._runtime.connect()
+                self._prove_runtime_locked(enody)
             yield enody, self._runtime
         except EnodyError:
             self._disconnect_locked()
@@ -182,6 +196,19 @@ class EnodyClient:
             raise EnodyCannotConnect(
                 "Unable to communicate with the Enody device"
             ) from err
+
+    def _prove_runtime_locked(self, enody: Any) -> None:
+        """Open a connection if there is none, then read from the device."""
+        if self._runtime is not None and not self._runtime.is_connected():
+            self._disconnect_locked()
+        if self._runtime is None:
+            token = enody.Token.from_dict(self._token_data)
+            self._runtime = enody.WifiConnection.runtime_from_endpoint(
+                token,
+                self._endpoint,
+            )
+            self._runtime.connect()
+        _read_live_host(self._runtime)
 
     async def async_disconnect(self) -> None:
         """Close the connection after any pending device work finishes."""

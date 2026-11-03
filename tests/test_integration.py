@@ -239,6 +239,7 @@ async def test_light_failure_reaches_the_service_caller(
     client = _client()
     client.async_display_fixture.side_effect = EnodyCannotConnect("offline")
     entity_id = await _setup(hass, entry, client)
+    client.async_get_info.side_effect = EnodyCannotConnect("offline")
 
     with pytest.raises(HomeAssistantError):
         await hass.services.async_call(
@@ -255,7 +256,28 @@ async def test_light_failure_reaches_the_service_caller(
     assert hass.states.get(entity_id).state == STATE_UNAVAILABLE
 
     client.async_display_fixture.side_effect = None
+    client.async_get_info.side_effect = None
     await entry.runtime_data.async_refresh()
+    assert hass.states.get(entity_id).state == STATE_UNKNOWN
+
+
+async def test_failed_command_keeps_a_reachable_light_available(
+    hass: HomeAssistant,
+) -> None:
+    """Home Assistant skips unavailable lights, so recovery cannot wait a poll."""
+    entry = _entry()
+    client = _client()
+    client.async_display_fixture.side_effect = EnodyCannotConnect("response lost")
+    entity_id = await _setup(hass, entry, client)
+
+    with pytest.raises(HomeAssistantError):
+        await hass.services.async_call(
+            LIGHT_DOMAIN,
+            SERVICE_TURN_ON,
+            {ATTR_ENTITY_ID: entity_id},
+            blocking=True,
+        )
+
     assert hass.states.get(entity_id).state == STATE_UNKNOWN
 
 
@@ -275,6 +297,7 @@ async def test_turn_off_failure_preserves_the_on_state(
         blocking=True,
     )
     client.async_display_fixture.side_effect = EnodyCannotConnect("offline")
+    client.async_get_info.side_effect = EnodyCannotConnect("offline")
 
     with pytest.raises(HomeAssistantError):
         await hass.services.async_call(
@@ -287,6 +310,7 @@ async def test_turn_off_failure_preserves_the_on_state(
     assert hass.states.get(entity_id).state == STATE_UNAVAILABLE
 
     client.async_display_fixture.side_effect = None
+    client.async_get_info.side_effect = None
     await entry.runtime_data.async_refresh()
     assert hass.states.get(entity_id).state == "on"
 

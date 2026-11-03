@@ -128,13 +128,30 @@ class FakeHost:
         return self._fixtures
 
 
+class FakeNativeRuntime:
+    """Fake native runtime, whose host() is a real device request."""
+
+    def __init__(self, runtime: "FakeRuntime") -> None:
+        self._runtime = runtime
+
+    def host(self) -> object:
+        """Count one device request."""
+        self._runtime.live_read_count += 1
+        if self._runtime.live_errors:
+            raise self._runtime.live_errors.pop(0)
+        return object()
+
+
 class FakeRuntime:
     """Fake Enody runtime."""
 
     def __init__(self, fixtures: list[FakeFixture]) -> None:
         self._fixtures = fixtures
         self._host: FakeHost | None = None
+        self._runtime_rs = FakeNativeRuntime(self)
         self.host_fetch_count = 0
+        self.live_read_count = 0
+        self.live_errors: list[Exception] = []
         self.connect_count = 0
         self.disconnect_count = 0
         self.connect_error: Exception | None = None
@@ -307,7 +324,7 @@ class EnodyApiTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(info.name, "Enody EP01 98A316B1")
         self.assertEqual(self.runtime.connect_count, 1)
         self.assertEqual(self.runtime.disconnect_count, 0)
-        self.assertEqual(self.runtime.host_fetch_count, 2)
+        self.assertEqual(self.runtime.live_read_count, 2)
 
     async def test_on_off_on_and_poll_share_one_connection(self) -> None:
         """Rapid toggles never open another EP01 connection."""
@@ -464,6 +481,41 @@ class EnodyApiTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.runtime.connect_count, 2)
         self.assertEqual(self.runtime.disconnect_count, 1)
         self.assertEqual(len(self.fixture.display_calls), 1)
+
+    async def test_dead_session_reconnects_before_the_command(self) -> None:
+        """A session that died unnoticed costs a reconnect, not the command."""
+        client = self.client()
+        await client.async_get_info()
+        self.runtime.live_errors = [TimeoutError("session died")]
+
+        await client.async_display_fixture("fixture-1", 0.5)
+
+        self.assertEqual(self.runtime.connect_count, 2)
+        self.assertEqual(self.runtime.disconnect_count, 1)
+        self.assertEqual(self.runtime.live_read_count, 3)
+        self.assertEqual(len(self.fixture.display_calls), 1)
+
+    async def test_dead_session_reconnects_once(self) -> None:
+        """A device that stays gone fails without sending the command."""
+        client = self.client()
+        await client.async_get_info()
+        self.runtime.live_errors = [TimeoutError("dead"), TimeoutError("still dead")]
+
+        with self.assertRaises(api.EnodyCannotConnect):
+            await client.async_display_fixture("fixture-1", 0.5)
+
+        self.assertEqual(self.runtime.connect_count, 2)
+        self.assertEqual(self.runtime.disconnect_count, 2)
+        self.assertEqual(self.fixture.display_calls, [])
+
+    async def test_fresh_connection_is_not_retried(self) -> None:
+        """Only a reused session can be stale."""
+        self.runtime.live_errors = [TimeoutError("no reply")]
+
+        with self.assertRaises(api.EnodyCannotConnect):
+            await self.client().async_get_info()
+
+        self.assertEqual(self.runtime.connect_count, 1)
 
     async def test_metadata_failure_drops_connection(self) -> None:
         """A polling failure cleans up before a subsequent refresh."""

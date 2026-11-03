@@ -42,6 +42,10 @@ choose **Reconfigure** to pair it again.
 
 - Each Home Assistant action waits for one device command to finish.
 - Device failures are returned to the caller instead of being hidden.
+- Each poll and each action first reads from the device, reconnecting once if
+  the session has died, for example after the lamp restarts. A failed action
+  refreshes availability at once and is never sent twice, because the lamp may
+  already have applied it.
 - Home Assistant marks the entity as assumed state and tracks the last
   successful target while the integration is running.
 - The `transition` parameter on `light.turn_on` and `light.turn_off` specifies a
@@ -98,7 +102,10 @@ require HA 2026 or override HA's `aiohttp` version.
 
 The runtime dependency is pinned to `enody==0.2.3` in both `pyproject.toml` and
 the Home Assistant manifest. This release exposes the device-side Transition API
-and releases the Python GIL during blocking device operations.
+and releases the Python GIL during blocking device operations. `enody==0.2.3`
+caches host info in Python and keeps reporting a dead socket as connected, so
+`api._read_live_host()` calls the private `runtime._runtime_rs.host()`. Recheck
+it, and the contract test in `tests/test_sdk.py`, when updating the SDK pin.
 
 ## Releases
 

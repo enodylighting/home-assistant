@@ -121,6 +121,7 @@ class EnodyFixtureLight(CoordinatorEntity[EnodyCoordinator], LightEntity):
             )
         except EnodyError as err:
             self.coordinator.async_set_update_error(err)
+            await self.coordinator.async_request_refresh()
             LOGGER.debug(
                 "Failed to turn on fixture %s",
                 self._fixture_id,
@@ -148,6 +149,7 @@ class EnodyFixtureLight(CoordinatorEntity[EnodyCoordinator], LightEntity):
             )
         except EnodyError as err:
             self.coordinator.async_set_update_error(err)
+            await self.coordinator.async_request_refresh()
             LOGGER.debug(
                 "Failed to turn off fixture %s",
                 self._fixture_id,

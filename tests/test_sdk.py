@@ -30,3 +30,11 @@ def test_sdk_color_and_transition_types() -> None:
             configuration, enody.Flux.relative(0.5), 2.5
         )
         assert isinstance(transition, enody.Transition)
+
+
+def test_sdk_keeps_the_native_runtime_for_live_reads() -> None:
+    """api._read_live_host relies on this private attribute of enody==0.2.3."""
+    enody = _load_enody()
+    native = object()
+
+    assert enody.interface.Runtime.from_rs(native)._runtime_rs is native
